@@ -17,20 +17,24 @@ const bootStart = Date.now();
 const port = env.PORT ?? 3000;
 const isDev = process.env.NODE_ENV !== 'production';
 
-async function handler(req: http.IncomingMessage | http2.Http2ServerRequest, res: http.ServerResponse | http2.Http2ServerResponse) {
+async function handler(
+  req: http.IncomingMessage | http2.Http2ServerRequest,
+  res: http.ServerResponse | http2.Http2ServerResponse
+) {
   const reqStart = Date.now();
 
   try {
     const method = 'method' in req ? req.method : req.headers[':method'];
-    const path = 'url' in req ? req.url : req.headers[':path'];
+    const reqPath = 'url' in req ? req.url : req.headers[':path'];
     const host = 'headers' in req && 'host' in req.headers ? req.headers.host : req.headers[':authority'];
 
-    if (!method || !path || !host) {
+    if (!method || !reqPath || !host) {
       res.statusCode = 400;
       return res.end('Bad Request');
     }
 
-    const url = new URL(path!, `http://${host}`);
+    const url = new URL(reqPath, `http://${host}`);
+
     const fetchRequest = new Request(url.toString(), {
       method,
       headers: req.headers as HeadersInit,
@@ -40,13 +44,10 @@ async function handler(req: http.IncomingMessage | http2.Http2ServerRequest, res
           : (Readable.toWeb(req as any) as unknown as ReadableStream<Uint8Array>),
     });
 
-    // Serve static files first
+    // Serve static files
     const staticResponse = await serveStatic(fetchRequest);
     if (staticResponse) {
-      res.statusCode = staticResponse.status;
-      for (const [key, value] of staticResponse.headers) {
-        res.setHeader(key, value);
-      }
+      res.writeHead(staticResponse.status, Object.fromEntries(staticResponse.headers));
       if (staticResponse.body) {
         const stream = Readable.fromWeb(staticResponse.body);
         stream.pipe(res as any);
@@ -56,19 +57,16 @@ async function handler(req: http.IncomingMessage | http2.Http2ServerRequest, res
       return;
     }
 
-    // Use router.render() instead of manual match + renderRSC
-    const response = await router.render(fetchRequest, url.pathname);
-
-    if (!response) {
-      res.statusCode = 404;
-      res.setHeader('Content-Type', 'text/plain');
+    // Match dynamic route
+    const routeMatch = router.match(url.pathname);
+    if (!routeMatch) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
       return res.end('Not Found');
     }
 
-    res.statusCode = response.status;
-    for (const [key, value] of response.headers) {
-      res.setHeader(key, value);
-    }
+    // Render using router
+    const response = await router.render(fetchRequest, url.pathname);
+    res.writeHead(response.status, Object.fromEntries(response.headers));
 
     if (response.body) {
       const stream = Readable.fromWeb(response.body);
@@ -76,7 +74,7 @@ async function handler(req: http.IncomingMessage | http2.Http2ServerRequest, res
     } else {
       res.end();
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('❌ Server error:', err);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'text/plain');
@@ -84,8 +82,8 @@ async function handler(req: http.IncomingMessage | http2.Http2ServerRequest, res
   } finally {
     const duration = Date.now() - reqStart;
     const method = 'method' in req ? req.method : req.headers[':method'];
-    const path = 'url' in req ? req.url : req.headers[':path'];
-    console.log(`📡 ${method} ${path} - ${duration}ms`);
+    const reqPath = 'url' in req ? req.url : req.headers[':path'];
+    console.log(`📡 ${method} ${reqPath} - ${duration}ms`);
   }
 }
 

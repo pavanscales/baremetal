@@ -1,13 +1,15 @@
-// router.ts
-
-type RouteHandler = (
+import { Request } from 'node-fetch';
+import type { ReactElement } from 'react';
+import type { Response } from 'node-fetch';
+import { renderRSC } from './render';
+export type RouteHandler = (
   req: Request,
   params: Record<string, string>,
   childResponse?: Response
-) => Promise<Response> | Response;
+) => Promise<ReactElement> | ReactElement;
 
 type MiddlewareNext = () => Promise<void>;
-type Middleware = (
+export type Middleware = (
   req: Request,
   params: Record<string, string>,
   next: MiddlewareNext
@@ -30,11 +32,7 @@ interface RouteNode {
 export class UltraRouter {
   private root: RouteNode = this.createNode('', false);
 
-  private createNode(
-    segment: string,
-    isDynamic = false,
-    paramName?: string
-  ): RouteNode {
+  private createNode(segment: string, isDynamic = false, paramName?: string): RouteNode {
     return {
       segment,
       isDynamic,
@@ -113,7 +111,14 @@ export class UltraRouter {
   ) {
     let i = 0;
     const next = async () => {
-      if (i < middleware.length) await middleware[i++](req, params, next);
+      if (i < middleware.length) {
+        try {
+          await middleware[i++](req, params, next);
+        } catch (err) {
+          console.error('❌ Middleware error:', err);
+          throw err;
+        }
+      }
     };
     await next();
   }
@@ -169,7 +174,6 @@ export class UltraRouter {
       if (child.isCatchAll) {
         params[child.paramName!] = segments.slice(index).join('/');
         if (child.routeHandler) return { node: child, params };
-        delete params[child.paramName!];
       }
     }
 
@@ -180,22 +184,21 @@ export class UltraRouter {
     const matched = this.match(pathname);
     if (!matched) return null;
 
-    for (const layout of matched.layouts) {
-      await this.runMiddleware(req, {}, layout.middleware);
+    try {
+      for (const layout of matched.layouts) {
+        await this.runMiddleware(req, matched.params, layout.middleware);
+      }
+
+      await this.runMiddleware(req, matched.params, matched.routeNode.middleware);
+
+      const { renderRSC } = await import('./render');
+      return await renderRSC({ route: { routeNode: matched.routeNode, params: matched.params }, req });
+    } catch (err) {
+      console.error('❌ Router render error:', err);
+      return new Response('Internal Server Error', { status: 500 });
     }
-
-    await this.runMiddleware(req, matched.params, matched.routeNode.middleware);
-
-    let response = await matched.routeNode.routeHandler!(req, matched.params);
-
-    for (const layout of matched.layouts.reverse()) {
-      response = await layout.layoutHandler!(req, matched.params, response);
-    }
-
-    return response;
   }
 
-  // ✅ Add this for preloadAll
   getAllRoutes(): { path: string }[] {
     const routes: { path: string }[] = [];
 

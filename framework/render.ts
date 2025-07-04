@@ -1,11 +1,10 @@
-import React from 'react'
-import {renderToReadableStream} from './rsc'
+import React from 'react';
+import { renderToReadableStream } from './rsc';
 import { cache } from './cache';
 import { profiler } from './profiler';
 
 const encoder = new TextEncoder();
 
-// Pre-encode shell once, keep as Uint8Array constants
 const shellStart = encoder.encode(
   '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>' +
   '<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
@@ -13,11 +12,8 @@ const shellStart = encoder.encode(
   '</head><body><div id="root">'
 );
 
-const shellEnd = encoder.encode(
-  '</div></body></html>'
-);
+const shellEnd = encoder.encode('</div></body></html>');
 
-// Async generator: yield shell + stream chunks + shell end
 async function* combinedStreamGenerator(stream: ReadableStream<Uint8Array>) {
   yield shellStart;
   const reader = stream.getReader();
@@ -33,7 +29,6 @@ async function* combinedStreamGenerator(stream: ReadableStream<Uint8Array>) {
   yield shellEnd;
 }
 
-// Return Response wrapping streaming HTML (shell + RSC)
 function htmlShell(stream: ReadableStream<Uint8Array>): Response {
   const combinedStream = new ReadableStream({
     async start(controller) {
@@ -43,59 +38,44 @@ function htmlShell(stream: ReadableStream<Uint8Array>): Response {
         }
         controller.close();
       } catch (error) {
-        // In production, consider logging the error somewhere async here
         controller.error(error);
       }
-    }
+    },
   });
 
   return new Response(combinedStream, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      // Cache aggressively for CDN on GET, no cache for others
       'Cache-Control': 'public, max-age=3600, stale-while-revalidate=59',
-      // Add security headers for production (CSP, XSS, HSTS)
-      // 'Content-Security-Policy': "default-src 'self'; script-src 'self'",
-      // 'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
     },
   });
 }
 
-// Main optimized renderRSC function with caching and profiling
 export async function renderRSC({
   route,
   req,
 }: {
-  route: any;
+  route: { routeNode: any; params: Record<string, string> };
   req: Request;
 }): Promise<Response> {
   profiler.start();
 
   try {
     const url = new URL(req.url);
-    // Key cache by method and pathname only to avoid cache explosion
     const cacheKey = `${req.method}:${url.pathname}`;
 
-    // Serve from cache ASAP
     const cached = cache.get(cacheKey);
     if (cached) {
       profiler.stop();
-      // Clone to avoid streaming issues with reused responses
       return cached.clone();
     }
 
-    // Run route handler to get React element to stream
-    const element = await route.handler(req, {});
-
-    // Stream render to readable stream from React Server Components
+    // Use the routeNode (already matched by router)
+    const element = await route.routeNode.routeHandler!(req, route.params);
     const rscStream = await renderToReadableStream(element);
-
-    // Wrap with fast streaming HTML shell
     const response = htmlShell(rscStream);
 
-    // Cache the response clone for next requests
     cache.set(cacheKey, response.clone());
-
     profiler.stop();
     return response;
   } catch (error: any) {
@@ -108,7 +88,6 @@ export async function renderRSC({
   }
 }
 
-// Escape HTML to avoid XSS in error messages
 function escapeHtml(str: string): string {
   return str.replace(/[&<>"']/g, (char) => {
     switch (char) {
