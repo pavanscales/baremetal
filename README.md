@@ -112,8 +112,6 @@ MIT © [pavanscales](https://github.com/pavanscales)
 
 > Ready to **turbo-charge your RSC apps**? Clone, run, and experience **bare-metal rendering at the edge of web performance**. 
 
-```
 
----
 
 ```
