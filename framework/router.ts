@@ -1,8 +1,14 @@
+<<<<<<< HEAD
 import { Request } from 'node-fetch';
 import type { ReactElement } from 'react';
 import type { Response } from 'node-fetch';
 import { renderRSC } from './render';
 export type RouteHandler = (
+=======
+import { renderRSC } from './render'; // 👈 Make sure this path is correct
+
+type RouteHandler = (
+>>>>>>> 78921f4c8dd1f1fa229ad2cae46896aae1a57dfd
   req: Request,
   params: Record<string, string>,
   childResponse?: Response
@@ -29,8 +35,8 @@ interface RouteNode {
   layoutHandler?: RouteHandler;
 }
 
-export class UltraRouter {
-  private root: RouteNode = this.createNode('', false);
+class UltraRouter {
+  private root: RouteNode = this.createNode("");
 
   private createNode(segment: string, isDynamic = false, paramName?: string): RouteNode {
     return {
@@ -59,6 +65,15 @@ export class UltraRouter {
 
     for (const seg of segments) {
       let child = node.children.get(seg.segment);
+
+      if (seg.isCatchAll) {
+        for (const c of node.children.values()) {
+          if (c.isCatchAll) {
+            throw new Error(`Only one catch-all route allowed per path segment: "${path}"`);
+          }
+        }
+      }
+
       if (!child) {
         child = this.createNode(seg.segment, seg.isDynamic, seg.paramName);
         child.isCatchAll = seg.isCatchAll;
@@ -66,6 +81,14 @@ export class UltraRouter {
         node.children.set(seg.segment, child);
       }
       node = child;
+    }
+
+    if (options.isLayout && node.layoutHandler) {
+      throw new Error(`Duplicate layout handler defined for path: ${path}`);
+    }
+
+    if (!options.isLayout && node.routeHandler) {
+      throw new Error(`Duplicate route handler defined for path: ${path}`);
     }
 
     node.isGroup = !!options.isGroup;
@@ -78,28 +101,22 @@ export class UltraRouter {
 
   private parseSegments(path: string) {
     return path
-      .split('/')
+      .split("/")
       .filter(Boolean)
       .map((seg) => {
-        if (seg.startsWith('(') && seg.endsWith(')'))
+        if (seg.startsWith("(") && seg.endsWith(")")) {
           return { segment: seg, isDynamic: false, isCatchAll: false };
-
-        if (seg.startsWith('*'))
-          return {
-            segment: seg,
-            isDynamic: true,
-            paramName: seg.slice(1),
-            isCatchAll: true,
-          };
-
-        if (seg.startsWith(':'))
-          return {
-            segment: seg,
-            isDynamic: true,
-            paramName: seg.slice(1),
-            isCatchAll: false,
-          };
-
+        }
+        if (seg.startsWith("*")) {
+          const name = seg.slice(1);
+          if (!name) throw new Error(`Catch-all must have param name: ${seg}`);
+          return { segment: seg, isDynamic: true, paramName: name, isCatchAll: true };
+        }
+        if (seg.startsWith(":")) {
+          const name = seg.slice(1);
+          if (!name) throw new Error(`Dynamic segment must have param name: ${seg}`);
+          return { segment: seg, isDynamic: true, paramName: name, isCatchAll: false };
+        }
         return { segment: seg, isDynamic: false, isCatchAll: false };
       });
   }
@@ -110,6 +127,7 @@ export class UltraRouter {
     middleware: Middleware[]
   ) {
     let i = 0;
+<<<<<<< HEAD
     const next = async () => {
       if (i < middleware.length) {
         try {
@@ -119,15 +137,25 @@ export class UltraRouter {
           throw err;
         }
       }
+=======
+    const next: MiddlewareNext = async () => {
+      if (i >= middleware.length) return;
+      const fn = middleware[i++];
+      let called = false;
+      await fn(req, params, async () => {
+        if (called) throw new Error("`next()` called multiple times in middleware");
+        called = true;
+        await next();
+      });
+>>>>>>> 78921f4c8dd1f1fa229ad2cae46896aae1a57dfd
     };
     await next();
   }
 
   match(pathname: string) {
-    const segments = pathname.split('/').filter(Boolean);
+    const segments = pathname.split("/").filter(Boolean);
     const params: Record<string, string> = {};
     const match = this.matchNode(this.root, segments, 0, params);
-
     if (!match) return null;
 
     const layouts: RouteNode[] = [];
@@ -162,18 +190,22 @@ export class UltraRouter {
     }
 
     for (const child of node.children.values()) {
-      if (child.isDynamic && !child.isCatchAll) {
-        params[child.paramName!] = seg;
+      if (child.isDynamic && !child.isCatchAll && child.paramName) {
+        params[child.paramName] = seg;
         const res = this.matchNode(child, segments, index + 1, params);
         if (res) return res;
-        delete params[child.paramName!];
+        delete params[child.paramName];
       }
     }
 
     for (const child of node.children.values()) {
-      if (child.isCatchAll) {
-        params[child.paramName!] = segments.slice(index).join('/');
+      if (child.isCatchAll && child.paramName) {
+        params[child.paramName] = segments.slice(index).join("/");
         if (child.routeHandler) return { node: child, params };
+<<<<<<< HEAD
+=======
+        delete params[child.paramName];
+>>>>>>> 78921f4c8dd1f1fa229ad2cae46896aae1a57dfd
       }
     }
 
@@ -191,30 +223,50 @@ export class UltraRouter {
 
       await this.runMiddleware(req, matched.params, matched.routeNode.middleware);
 
+<<<<<<< HEAD
       const { renderRSC } = await import('./render');
       return await renderRSC({ route: { routeNode: matched.routeNode, params: matched.params }, req });
     } catch (err) {
       console.error('❌ Router render error:', err);
       return new Response('Internal Server Error', { status: 500 });
+=======
+      if (!matched.routeNode.routeHandler) {
+        throw new Error(`No route handler defined for path: ${pathname}`);
+      }
+
+      // ✅ FIX: renderRSC instead of manual layout wrapping
+      return await renderRSC({
+        route: {
+          handler: (req) => matched.routeNode.routeHandler!(req, matched.params),
+        },
+        req,
+      });
+    } catch (err: any) {
+      console.error(`Render error for ${pathname}:`, err);
+      return new Response("Internal Server Error", { status: 500 });
+>>>>>>> 78921f4c8dd1f1fa229ad2cae46896aae1a57dfd
     }
   }
 
   getAllRoutes(): { path: string }[] {
     const routes: { path: string }[] = [];
-
     const traverse = (node: RouteNode, parts: string[] = []) => {
       if (node.routeHandler) {
-        const path = '/' + parts.filter(Boolean).join('/');
+        const path = "/" + parts.filter(Boolean).join("/");
         routes.push({ path });
       }
       for (const child of node.children.values()) {
         traverse(child, [...parts, child.segment]);
       }
     };
-
     traverse(this.root);
     return routes;
   }
 }
 
+<<<<<<< HEAD
 export const router = new UltraRouter();
+=======
+const router = new UltraRouter();
+export { UltraRouter, router };
+>>>>>>> 78921f4c8dd1f1fa229ad2cae46896aae1a57dfd
