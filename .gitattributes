@@ -1,0 +1,15 @@
+# Treat all TS/TSX files as TypeScript
+*.ts linguist-language=TypeScript
+*.tsx linguist-language=TypeScript
+
+# Mark generated or vendor files as linguist-vendored so they don't count
+/dist/** linguist-vendored
+/build/** linguist-vendored
+/.next/** linguist-vendored
+/node_modules/** linguist-vendored
+
+# Optional: ignore markdown, images, etc for language stats
+*.md linguist-vendored
+*.png linguist-vendored
+*.jpg linguist-vendored
+*.svg linguist-vendored
