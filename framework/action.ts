@@ -1,17 +1,4 @@
-// framework/actions.ts
-
-/**
- * High-performance server action system for React Server Components
- * Zero-overhead action handling with type safety and optimal scheduling
- */
-
 import { cache } from './cache';
-import { metricsCollector } from './metrics';
-import { actionQueue } from './queue';
-
-// ============================================================================
-// TYPE DEFINITIONS
-// ============================================================================
 
 interface ActionContext {
   requestId: string;
@@ -200,7 +187,7 @@ export function createAction<TInput, TOutput>(
           const cachedResult = await cache.get(cacheKey);
           if (cachedResult) {
             cached = true;
-            metricsCollector.recordCacheHit('action', cacheKey);
+            // Metrics collection can be added here if needed
             return {
               status: 'success',
               data: cachedResult,
@@ -230,12 +217,11 @@ export function createAction<TInput, TOutput>(
         if (config.cache?.enabled) {
           const cacheKey = config.cache.key(input);
           await cache.set(cacheKey, result, config.cache.ttl);
-          metricsCollector.recordCacheMiss('action', cacheKey);
         }
 
-        // 6. Metrics
+        // Log execution time
         const executionTime = performance.now() - startTime;
-        metricsCollector.recordActionExecution(ctx.requestId, executionTime);
+        logRequestTime(ctx.requestId, executionTime);
 
         return {
           status: 'success',
@@ -248,7 +234,7 @@ export function createAction<TInput, TOutput>(
         };
       } catch (error) {
         const executionTime = performance.now() - startTime;
-        metricsCollector.recordActionError(ctx.requestId, (error as Error).message);
+        console.error(`[Action] Error in ${executionTime}ms (${ctx.requestId}):`, error);
 
         return {
           status: 'error',

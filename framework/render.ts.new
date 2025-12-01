@@ -1,0 +1,211 @@
+import React, { ReactNode } from 'react';
+import { renderToReadableStream } from './rsc';
+import { cache } from './cache';
+import { profiler } from './profiler';
+
+type RouteHandler = (req: Request) => Promise<ReactNode> | ReactNode;
+
+const encoder = new TextEncoder();
+const shellStart = encoder.encode(
+  '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
+  '<title>Fast RSC App</title><style>body{margin:0;font-family:system-ui,sans-serif}</style>' +
+  '</head><body><div id="root">'
+);
+const shellEnd = encoder.encode('</div></body></html>');
+
+const htmlShell = (stream: ReadableStream<Uint8Array>): Response => {
+  const fullStream = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(shellStart);
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        controller.error(err);
+      } finally {
+        reader.releaseLock();
+      }
+      controller.enqueue(shellEnd);
+      controller.close();
+    },
+  });
+
+  return new Response(fullStream, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=59',
+    },
+  });
+};
+
+const htmlShellBuffer = (buffer: Uint8Array): Response => {
+  const fullStream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(shellStart);
+      controller.enqueue(buffer);
+      controller.enqueue(shellEnd);
+      controller.close();
+    },
+  });
+
+  return new Response(fullStream, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=59',
+    },
+  });
+};
+
+const withTimeout = async <T,>(promise: Promise<T>, ms: number): Promise<T> => 
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout exceeded')), ms)
+    ),
+  ]);
+
+const bufferStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+
+    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return result;
+  } finally {
+    reader.releaseLock();
+  }
+};
+
+const createErrorResponse = (message: string): Response => {
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>500 Internal Server Error</title>
+        <style>
+          body { 
+            font-family: system-ui, sans-serif; 
+            line-height: 1.5;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+          }
+          h1 { color: #dc2626; }
+          pre { 
+            background: #f3f4f6; 
+            padding: 1rem; 
+            border-radius: 0.5rem;
+            overflow-x: auto;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>500 Internal Server Error</h1>
+        <p>An error occurred while processing your request:</p>
+        <pre>${message}</pre>
+      </body>
+    </html>
+  `;
+  
+  return new Response(html, {
+    status: 500,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+};
+
+export const renderRSC = async ({
+  route,
+  req,
+}: {
+  route: {
+    handler: RouteHandler;
+    routeNode?: any;
+    params?: Record<string, string>;
+  };
+  req: Request;
+}): Promise<Response> => {
+  profiler.start();
+
+  try {
+    const url = new URL(req.url);
+    const cacheKey = `${req.method}:${url.pathname}`;
+
+    // Check cache first
+    const cachedBuffer = cache.get(cacheKey);
+    if (cachedBuffer instanceof Uint8Array) {
+      return htmlShellBuffer(cachedBuffer);
+    }
+
+    // Handle both new and old route formats
+    let element: ReactNode;
+    try {
+      if (route.handler) {
+        const result = route.handler(req);
+        element = result instanceof Promise ? await withTimeout(result, 3000) : result;
+      } else if (route.routeNode?.routeHandler) {
+        // Backward compatibility
+        const result = route.routeNode.routeHandler(req, route.params || {});
+        element = result instanceof Promise ? await withTimeout(result, 3000) : result;
+      } else {
+        throw new Error('Invalid route configuration: No valid handler found');
+      }
+    } catch (error) {
+      console.error('Error in route handler:', error);
+      throw new Error(`Route handler error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Apply layouts if available
+    const layouts = (globalThis as any)._layouts as
+      | ((children: ReactNode) => ReactNode)[]
+      | undefined;
+
+    if (layouts?.length) {
+      for (const wrap of [...layouts].reverse()) {
+        element = wrap(element);
+      }
+    }
+
+    if (!element || typeof element !== 'object') {
+      throw new Error('Route handler returned invalid JSX element');
+    }
+
+    // Render the component to a stream
+    const stream = await withTimeout(renderToReadableStream(element), 3000);
+
+    // Create two streams - one for the response and one for caching
+    const [responseStream, cacheStream] = stream.tee();
+
+    // Cache the response for future requests
+    bufferStream(cacheStream)
+      .then((buffer) => cache.set(cacheKey, buffer))
+      .catch((error) => console.error('Failed to cache response:', error));
+
+    // Return the response
+    return htmlShell(responseStream);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'An unknown error occurred';
+    console.error('Render error:', message, error);
+    return createErrorResponse(message);
+  } finally {
+    profiler.stop();
+  }
+};

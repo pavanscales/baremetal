@@ -1,9 +1,8 @@
-import { readdirSync, statSync } from "fs";
-import path, { sep } from "path";
-import { pathToFileURL } from "url";
-import { router } from "./router";
-import { renderRSC } from "./render"; // ✅ RSC renderer
-import React from "react";
+import { readdirSync, statSync } from 'fs';
+import path, { sep } from 'path';
+import { pathToFileURL } from 'url';
+import * as React from 'react';
+import { router } from './router';
 
 const pagesDir = path.join(process.cwd(), "pages");
 
@@ -37,6 +36,10 @@ function toRoutePath(filePath: string): string {
   );
 }
 
+// Route parameters type
+type RouteParams = Readonly<Record<string, string>>;
+
+
 for (const filePath of walk(pagesDir)) {
   const routePath = toRoutePath(filePath);
   const fileName = path.basename(filePath);
@@ -47,37 +50,36 @@ for (const filePath of walk(pagesDir)) {
 
   router.addRoute(
     routePath,
-    async (req, params) => {
+    async (req: Request, params: RouteParams): Promise<React.ReactElement> => {
       try {
         console.log(`⏳ Loading component for route: ${routePath}`);
         const { default: Component } = await import(pathToFileURL(filePath).href);
         console.log(`✅ Loaded component for route: ${routePath}`);
 
-        const element = React.createElement(Component, { params });
+        const element = <Component {...params} />;
 
         // ⬇️ Inject layout wrappers
         const match = router.match(routePath);
-        const layouts = [];
+        const layoutWrappers: Array<(child: React.ReactElement) => React.ReactElement> = [];
 
         if (match) {
           for (const layoutNode of match.layouts) {
             if (layoutNode.layoutHandler) {
-              const layoutComponent = await layoutNode.layoutHandler(req, params);
-              layouts.push((child: React.ReactNode) =>
-                React.createElement(layoutComponent as any, { children: child, params })
+              const layoutElement = await layoutNode.layoutHandler(req, params);
+              layoutWrappers.push((child: React.ReactElement) =>
+                React.cloneElement(layoutElement, { children: child, params })
               );
             }
           }
         }
 
-        (globalThis as any)._layouts = layouts;
-
-        return renderRSC({
-          route: {
-            handler: () => element,
-          },
-          req,
-        });
+        // Apply layouts if any
+        let wrappedElement: React.ReactElement = element;
+        for (const wrap of [...layoutWrappers].reverse()) {
+          wrappedElement = wrap(wrappedElement);
+        }
+        
+        return wrappedElement;
       } catch (e) {
         console.error(`❌ Error loading component for ${routePath}:`, e);
         throw e;
